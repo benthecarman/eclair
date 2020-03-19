@@ -106,7 +106,7 @@ class PostRestartHtlcCleaner(nodeParams: NodeParams, commandBuffer: ActorRef, in
 
     case ff: Relayer.ForwardFulfill =>
       log.info("htlc fulfilled downstream: ({},{})", ff.htlc.channelId, ff.htlc.id)
-      handleDownstreamFulfill(brokenHtlcs, ff.to, ff.htlc, ff.fulfill.paymentPreimage)
+      handleDownstreamFulfill(brokenHtlcs, ff.to, ff.htlc, ff.paymentPreimage)
 
     case ff: Relayer.ForwardFail =>
       log.info("htlc failed downstream: ({},{},{})", ff.htlc.channelId, ff.htlc.id, ff.getClass.getSimpleName)

@@ -109,12 +109,12 @@ class NodeRelayer(nodeParams: NodeParams, relayer: ActorRef, router: ActorRef, c
 
     case ff: Relayer.ForwardFulfill => ff.to match {
       case Origin.TrampolineRelayed(_, Some(paymentSender)) =>
-        paymentSender ! ff.fulfill
-        val paymentHash = Crypto.sha256(ff.fulfill.paymentPreimage)
+        paymentSender ! ff
+        val paymentHash = Crypto.sha256(ff.paymentPreimage)
         pendingOutgoing.get(paymentHash).foreach(p => if (!p.fulfilledUpstream) {
           // We want to fulfill upstream as soon as we receive the preimage (even if not all HTLCs have fulfilled downstream).
           log.debug("trampoline payment successfully relayed")
-          fulfillPayment(p.upstream, ff.fulfill.paymentPreimage)
+          fulfillPayment(p.upstream, ff.paymentPreimage)
           context become main(pendingIncoming, pendingOutgoing + (paymentHash -> p.copy(fulfilledUpstream = true)))
         })
       case _ => log.error(s"unexpected non-trampoline fulfill: $ff")

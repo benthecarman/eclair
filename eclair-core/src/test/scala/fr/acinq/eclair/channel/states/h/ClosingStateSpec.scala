@@ -361,14 +361,14 @@ class ClosingStateSpec extends TestkitBaseClass with StateTestsHelperMethods {
     alice ! WatchEventSpent(BITCOIN_OUTPUT_SPENT, claimHtlcSuccessFromCommitTx)
     val fulfill1 = relayerA.expectMsgType[ForwardOnChainFulfill]
     assert(fulfill1.htlc === htlca1)
-    assert(fulfill1.preimage === ra1)
+    assert(fulfill1.paymentPreimage === ra1)
 
     // scenario 2: bob claims the htlc output from his own commit tx using its preimage (let's assume both parties had published their commitment tx)
     val claimHtlcSuccessTx = Transaction(version = 0, txIn = TxIn(outPoint = OutPoint(randomBytes32, 0), signatureScript = ByteVector.empty, sequence = 0, witness = Scripts.witnessHtlcSuccess(Transactions.PlaceHolderSig, Transactions.PlaceHolderSig, ra1, ByteVector.fill(130)(33))) :: Nil, txOut = Nil, lockTime = 0)
     alice ! WatchEventSpent(BITCOIN_OUTPUT_SPENT, claimHtlcSuccessTx)
     val fulfill2 = relayerA.expectMsgType[ForwardOnChainFulfill]
     assert(fulfill2.htlc === htlca1)
-    assert(fulfill2.preimage === ra1)
+    assert(fulfill2.paymentPreimage === ra1)
 
     assert(alice.stateData == initialState) // this was a no-op
   }

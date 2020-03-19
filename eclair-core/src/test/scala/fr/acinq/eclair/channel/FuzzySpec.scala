@@ -30,6 +30,7 @@ import fr.acinq.eclair.channel.states.StateTestsHelperMethods
 import fr.acinq.eclair.payment._
 import fr.acinq.eclair.payment.receive.MultiPartHandler.ReceivePayment
 import fr.acinq.eclair.payment.receive.PaymentHandler
+import fr.acinq.eclair.payment.relay.Relayer.{ForwardFail, ForwardFulfill}
 import fr.acinq.eclair.payment.relay.{CommandBuffer, Relayer}
 import fr.acinq.eclair.router.ChannelHop
 import fr.acinq.eclair.wire.Onion.FinalLegacyPayload
@@ -131,11 +132,11 @@ class FuzzySpec extends TestkitBaseClass with StateTestsHelperMethods with Loggi
           case req: PaymentRequest =>
             sendChannel ! buildCmdAdd(req.paymentHash, req.nodeId)
             context become {
-              case u: UpdateFulfillHtlc =>
-                log.info(s"successfully sent htlc #${u.id}")
+              case ff: ForwardFulfill =>
+                log.info(s"successfully sent htlc #${ff.htlc.id}")
                 initiatePaymentOrStop(remaining - 1)
-              case u: UpdateFailHtlc =>
-                log.warning(s"htlc failed: ${u.id}")
+              case ff: ForwardFail =>
+                log.warning(s"htlc failed: ${ff.htlc.id}")
                 initiatePaymentOrStop(remaining - 1)
               case Status.Failure(t) =>
                 log.error(s"htlc error: ${t.getMessage}")

@@ -32,7 +32,9 @@ import fr.acinq.eclair.db.{OutgoingPayment, OutgoingPaymentStatus, PaymentType}
 import fr.acinq.eclair.io.Peer.PeerRoutingMessage
 import fr.acinq.eclair.payment.PaymentRequest.ExtraHop
 import fr.acinq.eclair.payment.PaymentSent.PartialPayment
+import fr.acinq.eclair.payment.relay.Origin
 import fr.acinq.eclair.payment.relay.Origin.Local
+import fr.acinq.eclair.payment.relay.Relayer.ForwardRemoteFulfill
 import fr.acinq.eclair.payment.send.PaymentInitiator.{SendPaymentConfig, SendPaymentRequest}
 import fr.acinq.eclair.payment.send.PaymentLifecycle
 import fr.acinq.eclair.payment.send.PaymentLifecycle._
@@ -54,6 +56,7 @@ class PaymentLifecycleSpec extends BaseRouterSpec {
   val defaultAmountMsat = 142000000 msat
   val defaultExpiry = Channel.MIN_CLTV_EXPIRY_DELTA.toCltvExpiry(40000)
   val defaultPaymentPreimage = randomBytes32
+  val defaultForwardFulfill = ForwardRemoteFulfill(UpdateFulfillHtlc(ByteVector32.Zeroes, 0, defaultPaymentPreimage), null, UpdateAddHtlc(ByteVector32.Zeroes, 0, null, null, null, null))
   val defaultPaymentHash = Crypto.sha256(defaultPaymentPreimage)
   val defaultExternalId = UUID.randomUUID().toString
   val defaultPaymentRequest = SendPaymentRequest(defaultAmountMsat, defaultPaymentHash, d, 1, externalId = Some(defaultExternalId))
@@ -96,7 +99,7 @@ class PaymentLifecycleSpec extends BaseRouterSpec {
     awaitCond(nodeParams.db.payments.getOutgoingPayment(id).exists(_.status == OutgoingPaymentStatus.Pending))
     val Some(outgoing) = nodeParams.db.payments.getOutgoingPayment(id)
     assert(outgoing.copy(createdAt = 0) === OutgoingPayment(id, parentId, Some(defaultExternalId), defaultPaymentHash, PaymentType.Standard, defaultAmountMsat, defaultAmountMsat, d, 0, None, OutgoingPaymentStatus.Pending))
-    sender.send(paymentFSM, UpdateFulfillHtlc(ByteVector32.Zeroes, 0, defaultPaymentHash))
+    sender.send(paymentFSM, defaultForwardFulfill)
 
     val ps = sender.expectMsgType[PaymentSent]
     assert(ps.id === parentId)
@@ -132,7 +135,7 @@ class PaymentLifecycleSpec extends BaseRouterSpec {
     val Transition(_, WAITING_FOR_ROUTE, WAITING_FOR_PAYMENT_COMPLETE) = monitor.expectMsgClass(classOf[Transition[_]])
 
     // Payment accepted by the recipient.
-    sender.send(paymentFSM, UpdateFulfillHtlc(ByteVector32.Zeroes, 0, defaultPaymentHash))
+    sender.send(paymentFSM, defaultForwardFulfill)
 
     val ps = sender.expectMsgType[PaymentSent]
     assert(ps.id === parentId)
@@ -465,7 +468,7 @@ class PaymentLifecycleSpec extends BaseRouterSpec {
     awaitCond(nodeParams.db.payments.getOutgoingPayment(id).exists(_.status === OutgoingPaymentStatus.Pending))
     val Some(outgoing) = nodeParams.db.payments.getOutgoingPayment(id)
     assert(outgoing.copy(createdAt = 0) === OutgoingPayment(id, parentId, Some(defaultExternalId), defaultPaymentHash, PaymentType.Standard, defaultAmountMsat, defaultAmountMsat, d, 0, None, OutgoingPaymentStatus.Pending))
-    sender.send(paymentFSM, UpdateFulfillHtlc(ByteVector32.Zeroes, 0, defaultPaymentPreimage))
+    sender.send(paymentFSM, defaultForwardFulfill)
 
     val ps = eventListener.expectMsgType[PaymentSent]
     assert(ps.id === parentId)
@@ -513,7 +516,7 @@ class PaymentLifecycleSpec extends BaseRouterSpec {
     routerForwarder.forward(router)
     val Transition(_, WAITING_FOR_ROUTE, WAITING_FOR_PAYMENT_COMPLETE) = monitor.expectMsgClass(classOf[Transition[_]])
 
-    sender.send(paymentFSM, UpdateFulfillHtlc(ByteVector32.Zeroes, 0, defaultPaymentHash))
+    sender.send(paymentFSM, defaultForwardFulfill)
     val paymentOK = sender.expectMsgType[PaymentSent]
     val PaymentSent(_, _, paymentOK.paymentPreimage, finalAmount, _, PartialPayment(_, request.finalPayload.amount, fee, ByteVector32.Zeroes, _, _) :: Nil) = eventListener.expectMsgType[PaymentSent]
     assert(finalAmount === defaultAmountMsat)
@@ -543,7 +546,7 @@ class PaymentLifecycleSpec extends BaseRouterSpec {
     val Transition(_, WAITING_FOR_ROUTE, WAITING_FOR_PAYMENT_COMPLETE) = monitor.expectMsgClass(classOf[Transition[_]])
     assert(nodeParams.db.payments.getOutgoingPayment(id) === None)
 
-    sender.send(paymentFSM, UpdateFulfillHtlc(ByteVector32.Zeroes, 0, defaultPaymentPreimage))
+    sender.send(paymentFSM, defaultForwardFulfill)
     sender.expectMsgType[PaymentSent]
     assert(nodeParams.db.payments.getOutgoingPayment(id) === None)
     eventListener.expectNoMsg(100 millis)

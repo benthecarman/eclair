@@ -157,9 +157,9 @@ class Relayer(nodeParams: NodeParams, router: ActorRef, register: ActorRef, comm
 
     case ff: ForwardFulfill => ff.to match {
       case Origin.Local(_, None) => postRestartCleaner forward ff
-      case Origin.Local(_, Some(sender)) => sender ! ff.fulfill
+      case Origin.Local(_, Some(sender)) => sender ! ff
       case Origin.Relayed(originChannelId, originHtlcId, amountIn, amountOut) =>
-        val cmd = CMD_FULFILL_HTLC(originHtlcId, ff.fulfill.paymentPreimage, commit = true)
+        val cmd = CMD_FULFILL_HTLC(originHtlcId, ff.paymentPreimage, commit = true)
         commandBuffer ! CommandBuffer.CommandSend(originChannelId, cmd)
         context.system.eventStream.publish(ChannelPaymentRelayed(amountIn, amountOut, ff.htlc.paymentHash, originChannelId, ff.htlc.channelId))
       case Origin.TrampolineRelayed(_, None) => postRestartCleaner forward ff
@@ -210,9 +210,9 @@ object Relayer extends Logging {
   // @formatter:off
   sealed trait ForwardMessage
   case class ForwardAdd(add: UpdateAddHtlc, previousFailures: Seq[AddHtlcFailed] = Seq.empty) extends ForwardMessage
-  sealed trait ForwardFulfill extends ForwardMessage { val fulfill: UpdateFulfillHtlc; val to: Origin; val htlc: UpdateAddHtlc }
-  case class ForwardRemoteFulfill(fulfill: UpdateFulfillHtlc, to: Origin, htlc: UpdateAddHtlc) extends ForwardFulfill
-  case class ForwardOnChainFulfill(preimage: ByteVector32, to: Origin, htlc: UpdateAddHtlc) extends ForwardFulfill { override val fulfill  = UpdateFulfillHtlc(htlc.channelId, htlc.id, preimage) }
+  sealed trait ForwardFulfill extends ForwardMessage { val paymentPreimage: ByteVector32; val to: Origin; val htlc: UpdateAddHtlc }
+  case class ForwardRemoteFulfill(fulfill: UpdateFulfillHtlc, to: Origin, htlc: UpdateAddHtlc) extends ForwardFulfill { override val paymentPreimage = fulfill.paymentPreimage }
+  case class ForwardOnChainFulfill(paymentPreimage: ByteVector32, to: Origin, htlc: UpdateAddHtlc) extends ForwardFulfill
   sealed trait ForwardFail extends ForwardMessage { val to: Origin; val htlc: UpdateAddHtlc }
   case class ForwardRemoteFail(fail: UpdateFailHtlc, to: Origin, htlc: UpdateAddHtlc) extends ForwardFail
   case class ForwardRemoteFailMalformed(fail: UpdateFailMalformedHtlc, to: Origin, htlc: UpdateAddHtlc) extends ForwardFail

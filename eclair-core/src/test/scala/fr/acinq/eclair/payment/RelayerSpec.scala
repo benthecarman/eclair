@@ -539,7 +539,7 @@ class RelayerSpec extends TestkitBaseClass {
     sender.send(relayer, forwardFulfill)
 
     // the FSM responsible for the payment should receive the fulfill.
-    payFSM.expectMsg(fulfill_bc)
+    payFSM.expectMsg(forwardFulfill)
 
     // the payment should be immediately fulfilled upstream.
     val upstream1 = register.expectMsgType[Register.Forward[CMD_FULFILL_HTLC]]
