@@ -127,102 +127,102 @@ class PaymentLifecycle(nodeParams: NodeParams, cfg: SendPaymentConfig, router: A
       myStop()
 
     case Event(fail: UpdateFailHtlc, WaitingForComplete(s, c, _, failures, sharedSecrets, ignoreNodes, ignoreChannels, hops)) =>
-          (Sphinx.FailurePacket.decrypt(fail.reason, sharedSecrets) match {
-            case success@Success(e) =>
-              Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType(RemoteFailure(Nil, e))).increment()
-              success
-            case failure@Failure(_) =>
-              Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType(UnreadableRemoteFailure(Nil))).increment()
-              failure
-          }) match {
-            case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) if nodeId == c.targetNodeId =>
-              // if destination node returns an error, we fail the payment immediately
-              log.warning(s"received an error message from target nodeId=$nodeId, failing the payment (failure=$failureMessage)")
-              onFailure(s, PaymentFailed(id, paymentHash, failures :+ RemoteFailure(cfg.fullRoute(hops), e)))
-              myStop()
-            case res if failures.size + 1 >= c.maxAttempts =>
-              // otherwise we never try more than maxAttempts, no matter the kind of error returned
-              val failure = res match {
-                case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) =>
-                  log.info(s"received an error message from nodeId=$nodeId (failure=$failureMessage)")
-                  RemoteFailure(cfg.fullRoute(hops), e)
-                case Failure(t) =>
-                  log.warning(s"cannot parse returned error: ${t.getMessage}")
-                  UnreadableRemoteFailure(cfg.fullRoute(hops))
-              }
-              log.warning(s"too many failed attempts, failing the payment")
-              onFailure(s, PaymentFailed(id, paymentHash, failures :+ failure))
-              myStop()
+      (Sphinx.FailurePacket.decrypt(fail.reason, sharedSecrets) match {
+        case success@Success(e) =>
+          Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType(RemoteFailure(Nil, e))).increment()
+          success
+        case failure@Failure(_) =>
+          Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType(UnreadableRemoteFailure(Nil))).increment()
+          failure
+      }) match {
+        case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) if nodeId == c.targetNodeId =>
+          // if destination node returns an error, we fail the payment immediately
+          log.warning(s"received an error message from target nodeId=$nodeId, failing the payment (failure=$failureMessage)")
+          onFailure(s, PaymentFailed(id, paymentHash, failures :+ RemoteFailure(cfg.fullRoute(hops), e)))
+          myStop()
+        case res if failures.size + 1 >= c.maxAttempts =>
+          // otherwise we never try more than maxAttempts, no matter the kind of error returned
+          val failure = res match {
+            case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) =>
+              log.info(s"received an error message from nodeId=$nodeId (failure=$failureMessage)")
+              RemoteFailure(cfg.fullRoute(hops), e)
             case Failure(t) =>
               log.warning(s"cannot parse returned error: ${t.getMessage}")
-              // in that case we don't know which node is sending garbage, let's try to blacklist all nodes except the one we are directly connected to and the destination node
-              val blacklist = hops.map(_.nextNodeId).drop(1).dropRight(1)
-              log.warning(s"blacklisting intermediate nodes=${blacklist.mkString(",")}")
-              router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes ++ blacklist, ignoreChannels, c.routeParams)
-              goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ UnreadableRemoteFailure(cfg.fullRoute(hops)))
-            case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage: Node)) =>
-              log.info(s"received 'Node' type error message from nodeId=$nodeId, trying to route around it (failure=$failureMessage)")
-              // let's try to route around this node
-              router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes + nodeId, ignoreChannels, c.routeParams)
-              goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ RemoteFailure(cfg.fullRoute(hops), e))
-            case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage: Update)) =>
-              log.info(s"received 'Update' type error message from nodeId=$nodeId, retrying payment (failure=$failureMessage)")
-              if (Announcements.checkSig(failureMessage.update, nodeId)) {
-                getChannelUpdateForNode(nodeId, hops) match {
-                  case Some(u) if u.shortChannelId != failureMessage.update.shortChannelId =>
-                    // it is possible that nodes in the route prefer using a different channel (to the same N+1 node) than the one we requested, that's fine
-                    log.info(s"received an update for a different channel than the one we asked: requested=${u.shortChannelId} actual=${failureMessage.update.shortChannelId} update=${failureMessage.update}")
-                  case Some(u) if Announcements.areSame(u, failureMessage.update) =>
-                    // node returned the exact same update we used, this can happen e.g. if the channel is imbalanced
-                    // in that case, let's temporarily exclude the channel from future routes, giving it time to recover
-                    log.info(s"received exact same update from nodeId=$nodeId, excluding the channel from futures routes")
-                    val nextNodeId = hops.find(_.nodeId == nodeId).get.nextNodeId
-                    router ! ExcludeChannel(ChannelDesc(u.shortChannelId, nodeId, nextNodeId))
-                  case Some(u) if PaymentFailure.hasAlreadyFailedOnce(nodeId, failures) =>
-                    // this node had already given us a new channel update and is still unhappy, it is probably messing with us, let's exclude it
-                    log.warning(s"it is the second time nodeId=$nodeId answers with a new update, excluding it: old=$u new=${failureMessage.update}")
-                    val nextNodeId = hops.find(_.nodeId == nodeId).get.nextNodeId
-                    router ! ExcludeChannel(ChannelDesc(u.shortChannelId, nodeId, nextNodeId))
-                  case Some(u) =>
-                    log.info(s"got a new update for shortChannelId=${u.shortChannelId}: old=$u new=${failureMessage.update}")
-                  case None =>
-                    log.error(s"couldn't find a channel update for node=$nodeId, this should never happen")
-                }
-                // in any case, we forward the update to the router
-                router ! failureMessage.update
-                // we also update assisted routes, because they take precedence over the router's routing table
-                val assistedRoutes1 = c.assistedRoutes.map(_.map {
-                  case extraHop: ExtraHop if extraHop.shortChannelId == failureMessage.update.shortChannelId => extraHop.copy(
-                    cltvExpiryDelta = failureMessage.update.cltvExpiryDelta,
-                    feeBase = failureMessage.update.feeBaseMsat,
-                    feeProportionalMillionths = failureMessage.update.feeProportionalMillionths
-                  )
-                  case extraHop => extraHop
-                })
-                // let's try again, router will have updated its state
-                router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, assistedRoutes1, ignoreNodes, ignoreChannels, c.routeParams)
-              } else {
-                // this node is fishy, it gave us a bad sig!! let's filter it out
-                log.warning(s"got bad signature from node=$nodeId update=${failureMessage.update}")
-                router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes + nodeId, ignoreChannels, c.routeParams)
-              }
-              goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ RemoteFailure(cfg.fullRoute(hops), e))
-            case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) =>
-              log.info(s"received an error message from nodeId=$nodeId, trying to use a different channel (failure=$failureMessage)")
-              // let's try again without the channel outgoing from nodeId
-              val faultyChannel = hops.find(_.nodeId == nodeId).map(hop => ChannelDesc(hop.lastUpdate.shortChannelId, hop.nodeId, hop.nextNodeId))
-              router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes, ignoreChannels ++ faultyChannel.toSet, c.routeParams)
-              goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ RemoteFailure(cfg.fullRoute(hops), e))
+              UnreadableRemoteFailure(cfg.fullRoute(hops))
           }
+          log.warning(s"too many failed attempts, failing the payment")
+          onFailure(s, PaymentFailed(id, paymentHash, failures :+ failure))
+          myStop()
+        case Failure(t) =>
+          log.warning(s"cannot parse returned error: ${t.getMessage}")
+          // in that case we don't know which node is sending garbage, let's try to blacklist all nodes except the one we are directly connected to and the destination node
+          val blacklist = hops.map(_.nextNodeId).drop(1).dropRight(1)
+          log.warning(s"blacklisting intermediate nodes=${blacklist.mkString(",")}")
+          router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes ++ blacklist, ignoreChannels, c.routeParams)
+          goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ UnreadableRemoteFailure(cfg.fullRoute(hops)))
+        case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage: Node)) =>
+          log.info(s"received 'Node' type error message from nodeId=$nodeId, trying to route around it (failure=$failureMessage)")
+          // let's try to route around this node
+          router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes + nodeId, ignoreChannels, c.routeParams)
+          goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ RemoteFailure(cfg.fullRoute(hops), e))
+        case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage: Update)) =>
+          log.info(s"received 'Update' type error message from nodeId=$nodeId, retrying payment (failure=$failureMessage)")
+          if (Announcements.checkSig(failureMessage.update, nodeId)) {
+            getChannelUpdateForNode(nodeId, hops) match {
+              case Some(u) if u.shortChannelId != failureMessage.update.shortChannelId =>
+                // it is possible that nodes in the route prefer using a different channel (to the same N+1 node) than the one we requested, that's fine
+                log.info(s"received an update for a different channel than the one we asked: requested=${u.shortChannelId} actual=${failureMessage.update.shortChannelId} update=${failureMessage.update}")
+              case Some(u) if Announcements.areSame(u, failureMessage.update) =>
+                // node returned the exact same update we used, this can happen e.g. if the channel is imbalanced
+                // in that case, let's temporarily exclude the channel from future routes, giving it time to recover
+                log.info(s"received exact same update from nodeId=$nodeId, excluding the channel from futures routes")
+                val nextNodeId = hops.find(_.nodeId == nodeId).get.nextNodeId
+                router ! ExcludeChannel(ChannelDesc(u.shortChannelId, nodeId, nextNodeId))
+              case Some(u) if PaymentFailure.hasAlreadyFailedOnce(nodeId, failures) =>
+                // this node had already given us a new channel update and is still unhappy, it is probably messing with us, let's exclude it
+                log.warning(s"it is the second time nodeId=$nodeId answers with a new update, excluding it: old=$u new=${failureMessage.update}")
+                val nextNodeId = hops.find(_.nodeId == nodeId).get.nextNodeId
+                router ! ExcludeChannel(ChannelDesc(u.shortChannelId, nodeId, nextNodeId))
+              case Some(u) =>
+                log.info(s"got a new update for shortChannelId=${u.shortChannelId}: old=$u new=${failureMessage.update}")
+              case None =>
+                log.error(s"couldn't find a channel update for node=$nodeId, this should never happen")
+            }
+            // in any case, we forward the update to the router
+            router ! failureMessage.update
+            // we also update assisted routes, because they take precedence over the router's routing table
+            val assistedRoutes1 = c.assistedRoutes.map(_.map {
+              case extraHop: ExtraHop if extraHop.shortChannelId == failureMessage.update.shortChannelId => extraHop.copy(
+                cltvExpiryDelta = failureMessage.update.cltvExpiryDelta,
+                feeBase = failureMessage.update.feeBaseMsat,
+                feeProportionalMillionths = failureMessage.update.feeProportionalMillionths
+              )
+              case extraHop => extraHop
+            })
+            // let's try again, router will have updated its state
+            router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, assistedRoutes1, ignoreNodes, ignoreChannels, c.routeParams)
+          } else {
+            // this node is fishy, it gave us a bad sig!! let's filter it out
+            log.warning(s"got bad signature from node=$nodeId update=${failureMessage.update}")
+            router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes + nodeId, ignoreChannels, c.routeParams)
+          }
+          goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ RemoteFailure(cfg.fullRoute(hops), e))
+        case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) =>
+          log.info(s"received an error message from nodeId=$nodeId, trying to use a different channel (failure=$failureMessage)")
+          // let's try again without the channel outgoing from nodeId
+          val faultyChannel = hops.find(_.nodeId == nodeId).map(hop => ChannelDesc(hop.lastUpdate.shortChannelId, hop.nodeId, hop.nextNodeId))
+          router ! RouteRequest(c.getRouteRequestStart(nodeParams), c.targetNodeId, c.finalPayload.amount, c.assistedRoutes, ignoreNodes, ignoreChannels ++ faultyChannel.toSet, c.routeParams)
+          goto(WAITING_FOR_ROUTE) using WaitingForRoute(s, c, failures :+ RemoteFailure(cfg.fullRoute(hops), e))
+      }
 
     case Event(fail: UpdateFailMalformedHtlc, _) =>
-          Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType.Malformed).increment()
-          log.info(s"first node in the route couldn't parse our htlc: fail=$fail")
-          // this is a corner case, that can only happen when the *first* node in the route cannot parse the onion
-          // (if this happens higher up in the route, the error would be wrapped in an UpdateFailHtlc and handled above)
-          // let's consider it a local error and treat is as such
-          self ! Status.Failure(new RuntimeException("first hop returned an UpdateFailMalformedHtlc message"))
-          stay
+      Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType.Malformed).increment()
+      log.info(s"first node in the route couldn't parse our htlc: fail=$fail")
+      // this is a corner case, that can only happen when the *first* node in the route cannot parse the onion
+      // (if this happens higher up in the route, the error would be wrapped in an UpdateFailHtlc and handled above)
+      // let's consider it a local error and treat is as such
+      self ! Status.Failure(new RuntimeException("first hop returned an UpdateFailMalformedHtlc message"))
+      stay
 
     case Event(Status.Failure(t), WaitingForComplete(s, c, _, failures, _, ignoreNodes, ignoreChannels, hops)) =>
       Metrics.PaymentError.withTag(Tags.Failure, Tags.FailureType(LocalFailure(t))).increment()
