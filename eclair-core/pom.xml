@@ -169,6 +169,16 @@
             <artifactId>jeromq</artifactId>
             <version>0.5.0</version>
         </dependency>
+        <dependency>
+            <groupId>org.bitcoin-s</groupId>
+            <artifactId>bitcoin-s-core_${scala.version.short}</artifactId>
+            <version>0.3.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bitcoin-s</groupId>
+            <artifactId>bitcoin-s-wallet_${scala.version.short}</artifactId>
+            <version>0.3.0</version>
+        </dependency>
         <!-- SERIALIZATION -->
         <dependency>
             <groupId>org.scodec</groupId>
@@ -236,6 +246,12 @@
             <groupId>com.whisk</groupId>
             <artifactId>docker-testkit-impl-spotify_${scala.version.short}</artifactId>
             <version>0.9.9</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.bitcoin-s</groupId>
+            <artifactId>bitcoin-s-testkit_${scala.version.short}</artifactId>
+            <version>0.3.0</version>
             <scope>test</scope>
         </dependency>
 	<!-- neeeded for our docker tests, see  https://github.com/spotify/dockerfile-maven/issues/90 -->
