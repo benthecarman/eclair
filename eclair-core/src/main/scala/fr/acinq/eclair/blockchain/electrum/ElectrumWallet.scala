@@ -454,12 +454,13 @@ class ElectrumWallet(seed: ByteVector, client: ActorRef, params: ElectrumWallet.
 
   whenUnhandled {
 
-    case Event(IsDoubleSpent(tx), data) =>
+    case Event(IsDoubleSpent(tx), data: Data) =>
       // detect if one of our transaction (i.e a transaction that spends from our wallet) has been double-spent
       val isDoubleSpent = data.heights
         .filter { case (_, height) => computeDepth(data.blockchain.height, height) >= 2 } // we only consider tx that have been confirmed
         .flatMap { case (txid, _) => data.transactions.get(txid) } // we get the full tx
-        .exists(spendingTx => spendingTx.txIn.map(_.outPoint).toSet.intersect(tx.txIn.map(_.outPoint).toSet).nonEmpty && spendingTx.txid != tx.txid) // look for a tx that spend the same utxos and has a different txid
+        .exists(spendingTx => spendingTx.txIn.map(_.outPoint).toSet
+          .intersect(tx.txIn.map(_.outPoint).toSet).nonEmpty && spendingTx.txid != tx.txid) // look for a tx that spend the same utxos and has a different txid
       stay() replying IsDoubleSpentResponse(tx, isDoubleSpent)
 
     case Event(ElectrumClient.ElectrumDisconnected, data) =>

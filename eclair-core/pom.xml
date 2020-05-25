@@ -172,12 +172,17 @@
         <dependency>
             <groupId>org.bitcoin-s</groupId>
             <artifactId>bitcoin-s-core_${scala.version.short}</artifactId>
-            <version>0.3.0</version>
+            <version>${bitcoin-s.version}</version>
         </dependency>
         <dependency>
             <groupId>org.bitcoin-s</groupId>
             <artifactId>bitcoin-s-wallet_${scala.version.short}</artifactId>
-            <version>0.3.0</version>
+            <version>${bitcoin-s.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bitcoin-s</groupId>
+            <artifactId>bitcoin-s-node_${scala.version.short}</artifactId>
+            <version>${bitcoin-s.version}</version>
         </dependency>
         <!-- SERIALIZATION -->
         <dependency>
@@ -251,7 +256,7 @@
         <dependency>
             <groupId>org.bitcoin-s</groupId>
             <artifactId>bitcoin-s-testkit_${scala.version.short}</artifactId>
-            <version>0.3.0</version>
+            <version>${bitcoin-s.version}</version>
             <scope>test</scope>
         </dependency>
 	<!-- neeeded for our docker tests, see  https://github.com/spotify/dockerfile-maven/issues/90 -->

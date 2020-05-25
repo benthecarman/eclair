@@ -131,7 +131,9 @@ class BitcoinCoreWallet(rpcClient: BitcoinJsonRPCClient)(implicit ec: ExecutionC
         // if the tx wasn't in the blockchain and one of it's input has been spent, it is double-spent
         // NB: we don't look in the mempool, so it means that we will only consider that the tx has been double-spent if
         // the overriding transaction has been confirmed at least once
-        Future.sequence(tx.txIn.map(txIn => bitcoinClient.isTransactionOutputSpendable(txIn.outPoint.txid, txIn.outPoint.index.toInt, includeMempool = false))).map(_.exists(_ == false))
+        Future.sequence(tx.txIn.map(txIn =>
+          bitcoinClient.isTransactionOutputSpendable(txIn.outPoint.txid, txIn.outPoint.index.toInt, includeMempool = false)))
+          .map(_.exists(_ == false))
       }
     } yield doublespent
 
