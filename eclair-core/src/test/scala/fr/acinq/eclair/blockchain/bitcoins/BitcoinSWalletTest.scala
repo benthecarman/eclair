@@ -1,6 +1,7 @@
 package fr.acinq.eclair.blockchain.bitcoins
 
 import fr.acinq.eclair.TestKitBaseClass
+import org.bitcoin.{NativeSecp256k1, Secp256k1Context}
 import org.bitcoins.testkit.BitcoinSTestAppConfig
 import org.bitcoins.testkit.node.NodeUnitTest
 import org.bitcoins.testkit.rpc.BitcoindRpcTestUtil
@@ -36,6 +37,10 @@ class BitcoinSWalletTest extends BitcoinSAsyncTest {
   behavior of "BitcoinSWallet"
 
   it must "generate an address" in {
+    println(s"DISABLE_SECP256K1="+ System.getenv("DISABLE_SECP256K1"))
+    //this uses eclair's Secp256k1.isEnabled() on the their classpath
+    //so it ignores 'DISABLE_SECP256k1'
+    println(s"Secp256k1.isEnabled=${Secp256k1Context.isEnabled}")
     bitcoinsWalletF.flatMap(_.getFinalAddress)
       .map(addr => println(s"Address=${addr}"))
       .map(_ => succeed)
