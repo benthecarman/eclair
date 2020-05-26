@@ -25,7 +25,7 @@ import scodec.bits.ByteVector
 
 import scala.concurrent.Future
 import scala.util.Properties
-class BitcoinSWallet()(implicit system: ActorSystem,
+class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: ActorSystem,
                        walletConf: WalletAppConfig,
                        nodeConf: NodeAppConfig,
                        chainConf: ChainAppConfig) extends EclairWallet {
@@ -130,8 +130,12 @@ class BitcoinSWallet()(implicit system: ActorSystem,
   }
 
   private val neutrinoNode: NeutrinoNode = {
-    val peerSocket =
-      parseInetSocketAddress(nodeConf.peers.head, nodeConf.network.port)
+    val peerSocket = peerOpt match {
+      case Some(socket) => socket
+      case None =>
+        parseInetSocketAddress(nodeConf.peers.head, nodeConf.network.port)
+    }
+
     val peer = Peer.fromSocket(peerSocket)
     NeutrinoNode(peer, nodeConf,chainConf,system)
   }
@@ -174,27 +178,28 @@ object BitcoinSWallet {
     fromDatadir(defaultDatadir)
   }
 
-  def fromDatadir(datadir: Path)(implicit system: ActorSystem): Future[BitcoinSWallet] = {
+  def fromDatadir(datadir: Path, peer: Option[InetSocketAddress] = None)(implicit system: ActorSystem): Future[BitcoinSWallet] = {
       import system.dispatcher
+    val useLogback = true
       implicit val walletConf: WalletAppConfig = {
-        val config = WalletAppConfig.fromDefaultDatadir(true)
+        val config = WalletAppConfig(datadir,useLogback)
         config
       }
 
       implicit val nodeConf: NodeAppConfig = {
-        val config = NodeAppConfig.fromDefaultDatadir(true)
+        val config = NodeAppConfig(datadir,useLogback)
         config
       }
 
       implicit val chainConf: ChainAppConfig = {
-        val config = ChainAppConfig.fromDefaultDatadir(true)
+        val config = ChainAppConfig(datadir,useLogback)
         config
       }
 
       for {
         _ <- walletConf.initialize()
         _ <- nodeConf.initialize()
-        wallet = new BitcoinSWallet()
+        wallet = new BitcoinSWallet(peer)
         _ <- wallet.start()
       } yield wallet
     }
