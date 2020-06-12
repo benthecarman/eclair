@@ -40,7 +40,7 @@ class BitcoinSWalletTest extends BitcoinSAsyncTest {
     println(s"DISABLE_SECP256K1="+ System.getenv("DISABLE_SECP256K1"))
     //this uses eclair's Secp256k1.isEnabled() on the their classpath
     //so it ignores 'DISABLE_SECP256k1'
-    println(s"Secp256k1.isEnabled=${Secp256k1Context.isEnabled}")
+    println(s"CryptoContext.default=${org.bitcoins.crypto.CryptoContext.default}")
     bitcoinsWalletF.flatMap(_.getFinalAddress)
       .map(addr => println(s"Address=${addr}"))
       .map(_ => succeed)

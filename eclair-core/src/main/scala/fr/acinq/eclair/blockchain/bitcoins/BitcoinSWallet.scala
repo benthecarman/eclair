@@ -1,6 +1,5 @@
 package fr.acinq.eclair.blockchain.bitcoins
 
-import java.io.File
 import java.net.InetSocketAddress
 import java.nio.file.{Files, Path, Paths}
 
@@ -8,12 +7,11 @@ import akka.actor.ActorSystem
 import fr.acinq.bitcoin.{Satoshi, Transaction}
 import fr.acinq.eclair.blockchain.{EclairWallet, MakeFundingTxResponse}
 import org.bitcoins.chain.config.ChainAppConfig
-import org.bitcoins.core.api.NodeApi
+import org.bitcoins.core.api.{FeeRateApi, NodeApi}
 import org.bitcoins.core.currency.Satoshis
 import org.bitcoins.core.protocol.script.ScriptPubKey
 import org.bitcoins.core.protocol.transaction.TransactionOutput
-import org.bitcoins.core.wallet.fee.SatoshisPerKiloByte
-import org.bitcoins.db.AppConfig
+import org.bitcoins.core.wallet.fee.{FeeUnit, SatoshisPerKiloByte, SatoshisPerVirtualByte}
 import org.bitcoins.keymanager.bip39.BIP39KeyManager
 import org.bitcoins.node.NeutrinoNode
 import org.bitcoins.node.config.NodeAppConfig
@@ -25,6 +23,7 @@ import scodec.bits.ByteVector
 
 import scala.concurrent.Future
 import scala.util.Properties
+
 class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: ActorSystem,
                        walletConf: WalletAppConfig,
                        nodeConf: NodeAppConfig,
@@ -43,10 +42,32 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
     }
   }
 
+  private val feeRateApi: FeeRateApi = {
+    new FeeRateApi {
+      override def getFeeRate: Future[FeeUnit] = Future.successful(SatoshisPerVirtualByte(Satoshis.one))
+    }
+  }
+  private val nodeApi: NodeApi = {
+    neutrinoNode
+  }
+
+  private val neutrinoNode: NeutrinoNode = {
+    val peerSocket = peerOpt match {
+      case Some(socket) => socket
+      case None =>
+        parseInetSocketAddress(nodeConf.peers.head, nodeConf.network.port)
+    }
+
+    val peer = Peer.fromSocket(peerSocket)
+    NeutrinoNode(peer, nodeConf,chainConf,system)
+  }
+
   private val wallet = Wallet(keyManager = keyManager,
     nodeApi = nodeApi,
     chainQueryApi = neutrinoNode,
-    creationTime = keyManager.creationTime)
+    creationTime = keyManager.creationTime,
+    feeRateApi = feeRateApi
+  )
 
   override def getBalance: Future[Satoshi] = {
     wallet.getBalance().map(sat => Satoshi(sat.satoshis.toLong))
@@ -125,22 +146,6 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
       .map(_ => ())
   }
 
-  private val nodeApi: NodeApi = {
-    neutrinoNode
-  }
-
-  private val neutrinoNode: NeutrinoNode = {
-    val peerSocket = peerOpt match {
-      case Some(socket) => socket
-      case None =>
-        parseInetSocketAddress(nodeConf.peers.head, nodeConf.network.port)
-    }
-
-    val peer = Peer.fromSocket(peerSocket)
-    NeutrinoNode(peer, nodeConf,chainConf,system)
-  }
-
-
   private def parseInetSocketAddress(
                                       address: String,
                                       defaultPort: Int): InetSocketAddress = {
@@ -197,6 +202,7 @@ object BitcoinSWallet {
       }
 
       for {
+        _ <- chainConf.initialize()
         _ <- walletConf.initialize()
         _ <- nodeConf.initialize()
         wallet = new BitcoinSWallet(peer)
