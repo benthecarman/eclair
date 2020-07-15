@@ -1,11 +1,11 @@
 package fr.acinq.eclair.blockchain.bitcoins
 
-import java.net.InetSocketAddress
 import java.nio.file.{Files, Path, Paths}
 
 import akka.actor.ActorSystem
 import com.typesafe.config.ConfigFactory
 import fr.acinq.bitcoin.{Satoshi, Transaction}
+import fr.acinq.eclair.blockchain.bitcoind.rpc._
 import fr.acinq.eclair.blockchain.{EclairWallet, MakeFundingTxResponse}
 import org.bitcoins.chain.config.ChainAppConfig
 import org.bitcoins.chain.models.{BlockHeaderDb, BlockHeaderDbHelper}
@@ -18,23 +18,21 @@ import org.bitcoins.core.protocol.script.ScriptPubKey
 import org.bitcoins.core.protocol.transaction.TransactionOutput
 import org.bitcoins.core.util.FutureUtil
 import org.bitcoins.core.wallet.fee._
+import org.bitcoins.core.wallet.utxo.TxoState
 import org.bitcoins.keymanager.bip39.{BIP39KeyManager, BIP39LockedKeyManager}
 import org.bitcoins.node._
 import org.bitcoins.node.config.NodeAppConfig
-import org.bitcoins.node.models.Peer
 import org.bitcoins.wallet.Wallet
 import org.bitcoins.wallet.api.WalletApi
 import org.bitcoins.wallet.config.WalletAppConfig
-import org.bitcoins.wallet.models.AccountDAO
+import org.bitcoins.wallet.models.{AccountDAO, SpendingInfoDb}
 import scodec.bits.ByteVector
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Properties
 
-class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: ActorSystem,
-                                                             walletConf: WalletAppConfig,
-                                                             nodeConf: NodeAppConfig,
-                                                             chainConf: ChainAppConfig) extends EclairWallet {
+class BitcoinSWallet(rpcClient: BitcoinJsonRPCClient, bip39PasswordOpt: Option[String] = None)(implicit system: ActorSystem,
+                                                                                               walletConf: WalletAppConfig) extends EclairWallet {
 
   import system.dispatcher
 
@@ -57,20 +55,11 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
     }
   }
 
-  private val neutrinoNode: NeutrinoNode = {
-    val peerSocket = peerOpt match {
-      case Some(socket) => socket
-      case None =>
-        parseInetSocketAddress(nodeConf.peers.head, nodeConf.network.port)
-    }
+  val extendedBitcoind: BitcoinSBitcoinClient = new BitcoinSBitcoinClient(rpcClient)
 
-    val peer = Peer.fromSocket(peerSocket)
-    NeutrinoNode(peer, nodeConf, chainConf, system)
-  }
-
-  private val wallet = Wallet(keyManager = keyManager,
-    nodeApi = neutrinoNode,
-    chainQueryApi = neutrinoNode,
+  private val wallet: Wallet = Wallet(keyManager = keyManager,
+    nodeApi = extendedBitcoind,
+    chainQueryApi = extendedBitcoind,
     creationTime = keyManager.creationTime,
     feeRateApi = feeRateApi
   )
@@ -90,9 +79,8 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
     val sats = Satoshis(amount.toLong)
     val output = Vector(TransactionOutput(sats, spk))
     val feeRate = SatoshisPerKW(Satoshis(feeRatePerKw))
-    val fundedTxF = wallet.fundRawTransaction(output,
-      feeRate,
-      markAsReserved = true)
+
+    val fundedTxF = wallet.sendToOutputs(output, Some(feeRate), reserveUtxos = true)
 
     for {
       tx <- fundedTxF
@@ -104,9 +92,7 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
   }
 
   override def commit(tx: Transaction): Future[Boolean] = {
-    val bsTx = toBitcoinsTx(tx)
-    neutrinoNode.broadcastTransaction(bsTx)
-      .map(_ => true)
+    publishTransaction(tx).map(_ => true)
   }
 
   override def rollback(tx: Transaction): Future[Boolean] = {
@@ -114,16 +100,53 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
     val txOutPoints = bsTx.inputs.map(_.previousOutput)
     val utxosInTxF = wallet.listUtxos(txOutPoints.toVector)
 
-    utxosInTxF.flatMap(wallet.unmarkUTXOsAsReserved)
+    utxosInTxF.flatMap(utxos =>
+      // fixme temp hack to pass invariant
+      wallet.unmarkUTXOsAsReserved(utxos.map(_.copyWithState(TxoState.Reserved))))
       .map(_ => true)
   }
 
 
   override def doubleSpent(tx: Transaction): Future[Boolean] = {
-    //comeback later and implement, this seems to be optional though
-    Future.successful(false)
+    // stolen from BitcoinCoreWallet.scala
+    for {
+      exists <- extendedBitcoind.getTransaction(tx.txid)
+        .map(_ => true) // we have found the transaction
+        .recover {
+          case JsonRPCError(Error(_, message)) if message.contains("index") =>
+            sys.error("Fatal error: bitcoind is indexing!!")
+            System.exit(1) // bitcoind is indexing, that's a fatal error!!
+            false // won't be reached
+          case _ => false
+        }
+      doubleSpent <- if (exists) {
+        // if the tx is in the blockchain, it can't have been double-spent
+        Future.successful(false)
+      } else {
+        // if the tx wasn't in the blockchain and one of it's input has been spent, it is double-spent
+        // NB: we don't look in the mempool, so it means that we will only consider that the tx has been double-spent if
+        // the overriding transaction has been confirmed at least once
+        Future.sequence(tx.txIn.map(txIn =>
+          extendedBitcoind.isTransactionOutputSpendable(txIn.outPoint.txid, txIn.outPoint.index.toInt, includeMempool = false)))
+          .map(_.exists(_ == false))
+      }
+    } yield doubleSpent
   }
 
+  def listReservedUtxos: Future[Vector[SpendingInfoDb]] = {
+    wallet.listUtxos(TxoState.Reserved)
+  }
+
+  def listUtxos: Future[Vector[SpendingInfoDb]] = {
+    wallet.listUtxos()
+  }
+
+  def publishTransaction(tx: Transaction): Future[String] = {
+    for {
+      _ <- wallet.processTransaction(toBitcoinsTx(tx), None)
+      resp <- extendedBitcoind.publishTransaction(tx)
+    } yield resp
+  }
 
   def hasWallet: Future[Boolean] = {
     val walletDB = walletConf.dbPath resolve walletConf.dbName
@@ -136,18 +159,17 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
   }
 
   private def createCallbacks(wallet: WalletApi)(implicit
-                                                 nodeConf: NodeAppConfig,
                                                  ec: ExecutionContext): Future[NodeCallbacks] = {
-    lazy val onTx: OnTxReceived = { tx =>
-      wallet.processTransaction(tx, blockHash = None).map(_ => ())
-    }
     lazy val onCompactFilters: OnCompactFiltersReceived = { blockFilters =>
       wallet
         .processCompactFilters(blockFilters = blockFilters)
         .map(_ => ())
     }
     lazy val onBlock: OnBlockReceived = { block =>
-      wallet.processBlock(block).map(_ => ())
+      for {
+        _ <- wallet.processBlock(block).map(_ => ())
+        _ <- wallet.updateUtxoPendingStates(block.blockHeader)
+      } yield ()
     }
     lazy val onHeaders: OnBlockHeadersReceived = { headers =>
       if (headers.isEmpty) {
@@ -156,22 +178,14 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
         wallet.updateUtxoPendingStates(headers.last).map(_ => ())
       }
     }
-    if (nodeConf.isSPVEnabled) {
-      Future.successful(
-        NodeCallbacks(onTxReceived = Vector(onTx),
-          onBlockHeadersReceived = Vector(onHeaders)))
-    } else if (nodeConf.isNeutrinoEnabled) {
-      Future.successful(
-        NodeCallbacks(onBlockReceived = Vector(onBlock),
-          onCompactFiltersReceived = Vector(onCompactFilters),
-          onBlockHeadersReceived = Vector(onHeaders)))
-    } else {
-      Future.failed(new RuntimeException("Unexpected node type"))
-    }
+    Future.successful(
+      NodeCallbacks(onBlockReceived = Vector(onBlock),
+        onCompactFiltersReceived = Vector(onCompactFilters),
+        onBlockHeadersReceived = Vector(onHeaders)))
   }
 
   /** Creates a wallet based on the given [[WalletAppConfig]] */
-  def initWallet(bip39PasswordOpt: Option[String])(implicit walletConf: WalletAppConfig, ec: ExecutionContext): Future[Wallet] = {
+  def initWallet(implicit walletConf: WalletAppConfig, ec: ExecutionContext): Future[Wallet] = {
     hasWallet.flatMap { walletExists =>
       if (walletExists) {
         // TODO change me when we implement proper password handling
@@ -197,46 +211,11 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
   def start(): Future[BitcoinSWallet] = {
     for {
       _ <- walletConf.initialize()
-      _ <- nodeConf.initialize()
-      _ <- chainConf.initialize()
-      _ <- initWallet(None)
+      _ <- initWallet
       callbacks <- createCallbacks(wallet)
-      _ = neutrinoNode.addCallbacks(callbacks)
-      chainApi <- neutrinoNode.chainApiFromDb()
-
-      // Make sure we have the genesis header at start, can cause problems if we don't
-      _ <- chainApi.blockHeaderDAO.upsert(genesisHeaderDb)
-      _ <- neutrinoNode.start()
+      _ = extendedBitcoind.addCallbacks(callbacks)
     } yield {
       this
-    }
-  }
-
-  def stop(): Future[Unit] = {
-    neutrinoNode.stop()
-      .map(_ => ())
-  }
-
-  private def parseInetSocketAddress(address: String, defaultPort: Int): InetSocketAddress = {
-
-    def parsePort(port: String): Int = {
-      lazy val errorMsg = s"Invalid peer port: $address"
-      try {
-        val res = port.toInt
-        if (res < 0 || res > 0xffff) {
-          throw new RuntimeException(errorMsg)
-        }
-        res
-      } catch {
-        case _: NumberFormatException =>
-          throw new RuntimeException(errorMsg)
-      }
-    }
-
-    address.split(":") match {
-      case Array(host) => new InetSocketAddress(host, defaultPort)
-      case Array(host, port) => new InetSocketAddress(host, parsePort(port))
-      case _ => throw new RuntimeException(s"Invalid peer address: $address")
     }
   }
 
@@ -248,11 +227,7 @@ class BitcoinSWallet(val peerOpt: Option[InetSocketAddress])(implicit system: Ac
 object BitcoinSWallet {
   val defaultDatadir: Path = Paths.get(Properties.userHome, ".bitcoin-s")
 
-  def fromDefaultDatadir()(implicit system: ActorSystem): Future[BitcoinSWallet] = {
-    fromDatadir(defaultDatadir)
-  }
-
-  def fromDatadir(datadir: Path, peer: Option[InetSocketAddress] = None)(implicit system: ActorSystem): Future[BitcoinSWallet] = {
+  def fromDatadir(rpcClient: BitcoinJsonRPCClient, datadir: Path = defaultDatadir)(implicit system: ActorSystem): Future[BitcoinSWallet] = {
     import system.dispatcher
     val useLogback = true
     val segwitConf = ConfigFactory.parseString("bitcoin-s.wallet.defaultAccountType = segwit")
@@ -276,7 +251,7 @@ object BitcoinSWallet {
       _ <- chainConf.initialize()
       _ <- walletConf.initialize()
       _ <- nodeConf.initialize()
-      wallet = new BitcoinSWallet(peer)
+      wallet = new BitcoinSWallet(rpcClient)
       _ <- wallet.start()
     } yield wallet
   }
