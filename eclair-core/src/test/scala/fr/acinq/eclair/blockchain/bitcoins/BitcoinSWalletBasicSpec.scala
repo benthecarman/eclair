@@ -137,7 +137,7 @@ class BitcoinSWalletBasicSpec extends TestKitBaseClass with BitcoindService with
     wallet.getFinalAddress.pipeTo(sender.ref)
     val addr = sender.expectMsgType[String]
 
-    wallet.extendedBitcoind.generateToAddress(1, BitcoinAddress.fromString(addr)).pipeTo(sender.ref)
+    wallet.extendedBitcoind.generateToAddress(6, BitcoinAddress.fromString(addr)).pipeTo(sender.ref)
     val hashes = sender.expectMsgType[Vector[DoubleSha256DigestBE]]
 
     wallet.extendedBitcoind.downloadBlocks(hashes.map(_.flip)).pipeTo(sender.ref)

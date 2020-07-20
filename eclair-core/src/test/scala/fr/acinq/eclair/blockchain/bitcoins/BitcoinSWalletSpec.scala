@@ -151,13 +151,6 @@ class BitcoinSWalletSpec extends TestKitBaseClass with BitcoindService with AnyF
       wallet.listUtxos.pipeTo(sender.ref)
       val utxos = sender.expectMsgType[Vector[SpendingInfoDb]]
 
-      println(utxos.mkString("\n"))
-
-      println("===============")
-      println(balance)
-      println(balance1)
-      println("===============")
-
       balance1 == balance + 100000000.sat
     }, max = 10 seconds, interval = 1 second)
 
