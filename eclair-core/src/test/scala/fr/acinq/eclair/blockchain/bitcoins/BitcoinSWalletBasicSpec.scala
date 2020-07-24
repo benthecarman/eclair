@@ -166,12 +166,10 @@ class BitcoinSWalletBasicSpec extends TestKitBaseClass with BitcoindService with
 
     val pubkeyScript = Script.write(Script.pay2wsh(Scripts.multiSig2of2(randomKey.publicKey, randomKey.publicKey)))
     wallet.makeFundingTx(pubkeyScript, MilliBtc(50), 10000).pipeTo(sender.ref)
+    val fundingTx = sender.expectMsgType[MakeFundingTxResponse].fundingTx
 
     wallet.listReservedUtxos.pipeTo(sender.ref)
-    assert(sender.expectMsgType[Vector[SpendingInfoDb]](10 seconds).size === 0)
-
-    wallet.makeFundingTx(pubkeyScript, MilliBtc(50), 10000).pipeTo(sender.ref)
-    val fundingTx = sender.expectMsgType[MakeFundingTxResponse].fundingTx
+    assert(sender.expectMsgType[Vector[SpendingInfoDb]](10 seconds).size === 1)
 
     wallet.commit(fundingTx).pipeTo(sender.ref)
     assert(sender.expectMsgType[Boolean])
